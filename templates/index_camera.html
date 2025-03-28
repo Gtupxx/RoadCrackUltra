@@ -1,0 +1,143 @@
+<!doctype html>
+<html>
+
+<head>
+  <meta charset="utf-8">
+  <title>摄像头实时处理 Demo</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.0/socket.io.min.js"></script> <!-- 引入 Socket.IO 客户端 -->
+  <script>
+    let currentStream = null;  // 当前视频流
+    let currentVideoElement = null; // 当前的视频元素
+    let currentCanvasElement = null; // 当前的canvas元素
+    let currentResultImage = null; // 当前的结果图片元素
+    let socket = null;  // Socket.IO 客户端实例
+
+    // 获取所有摄像头设备并填充选择框
+    async function getCameraDevices() {
+      try {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const videoDevices = devices.filter(device => device.kind === 'videoinput');
+        const selectElement = document.getElementById('cameraSelect');
+
+        selectElement.innerHTML = ''; // 清空现有选项
+
+        videoDevices.forEach((device, index) => {
+          const option = document.createElement('option');
+          option.value = device.deviceId;
+          option.text = device.label || `摄像头 ${index + 1}`;
+          selectElement.appendChild(option);
+        });
+
+        // 默认选择第一个摄像头并启动
+        if (videoDevices.length > 0) {
+          startCamera(videoDevices[0].deviceId);
+        }
+
+      } catch (error) {
+        console.error('获取摄像头设备失败:', error);
+      }
+    }
+
+    // 启动摄像头
+    async function startCamera(deviceId) {
+      const constraints = { video: { deviceId: { exact: deviceId } } };
+
+      // 停止之前的流
+      if (currentStream) {
+        currentStream.getTracks().forEach(track => track.stop());
+      }
+
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia(constraints);
+        currentStream = stream;
+
+        // 创建HTML结构，放入video、canvas和处理后图片区域
+        const container = document.getElementById('videoContainer');
+        container.innerHTML = `  
+          <h3>摄像头画面</h3>
+          <video id="video" autoplay></video>
+          <canvas id="canvas" style="display:none"></canvas>
+          <h4>处理后画面</h4>
+          <img id="result" />
+        `;
+        
+        // 获取元素
+        currentVideoElement = document.getElementById('video');
+        currentCanvasElement = document.getElementById('canvas');
+        currentResultImage = document.getElementById('result');
+
+        currentVideoElement.srcObject = stream;
+
+        currentVideoElement.onloadedmetadata = function () {
+          currentCanvasElement.width = currentVideoElement.videoWidth;
+          currentCanvasElement.height = currentVideoElement.videoHeight;
+        };
+
+        // 开始实时处理
+        processVideo();
+
+      } catch (error) {
+        console.error('启动摄像头失败:', error);
+      }
+    }
+
+    // 处理摄像头视频
+    function processVideo() {
+      const video = currentVideoElement;
+      const canvas = currentCanvasElement;
+      const context = canvas.getContext('2d');
+
+      function captureFrame() {
+        if (!video.paused && !video.ended) {
+          context.drawImage(video, 0, 0, canvas.width, canvas.height);
+          const dataUrl = canvas.toDataURL('image/png');
+
+          // 发送到后端处理（通过 Socket.IO）
+          if (socket) {
+            socket.emit('send_image', { image: dataUrl });
+          }
+        }
+        requestAnimationFrame(captureFrame); // 使用 requestAnimationFrame 替代 setTimeout
+      }
+
+      captureFrame();
+    }
+
+    // 切换摄像头
+    function onCameraChange() {
+      const selectElement = document.getElementById('cameraSelect');
+      const selectedDeviceId = selectElement.value;
+      startCamera(selectedDeviceId);
+    }
+
+    // 连接到服务器
+    window.onload = function () {
+      socket = io.connect(); // 创建 Socket.IO 客户端连接
+      getCameraDevices();
+      
+      // 监听从后端接收到的图像和 FPS
+      socket.on('receive_image', function(data) {
+        if (data.image) {
+          currentResultImage.src = data.image;
+        }
+        if (data.fps) {
+          document.getElementById('fps').innerText = `FPS: ${data.fps.toFixed(2)}`; // 更新 FPS 显示
+        }
+      });
+
+      const selectElement = document.getElementById('cameraSelect');
+      selectElement.onchange = onCameraChange;
+    };
+  </script>
+</head>
+
+<body>
+  <h2>摄像头实时处理 Demo</h2>
+  <div>
+    <label for="cameraSelect">选择摄像头：</label>
+    <select id="cameraSelect"></select>
+  </div>
+  <div id="videoContainer"></div>
+</body>
+
+</html>

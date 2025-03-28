@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>预设模型切换</title>
+    <script>
+        function switchModel(modelName) {
+            fetch(`/set_model?name=${modelName}`)
+                .then(response => response.text())
+                .then(data => alert(data))
+                .catch(error => alert('请求失败: ' + error));
+        }
+    </script>
+</head>
+<body>
+    <img src="{{ url_for('video_feed') }}" width="800" height="600">
+    <div>
+        <button onclick="switchModel('yolov5s')">yolov5s</button>
+        <button onclick="switchModel('yolov5m')">yolov5m</button>
+    </div>
+</body>
+</html>
