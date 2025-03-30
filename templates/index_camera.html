@@ -4,7 +4,8 @@
 <head>
   <meta charset="utf-8">
   <title>摄像头实时处理 Demo</title>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.0/socket.io.min.js"></script> <!-- 引入 Socket.IO 客户端 -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.0/socket.io.min.js"></script>
+  <!-- 引入 Socket.IO 客户端 -->
   <script>
     let currentStream = null;  // 当前视频流
     let currentVideoElement = null; // 当前的视频元素
@@ -12,16 +13,33 @@
     let currentResultImage = null; // 当前的结果图片元素
     let socket = null;  // Socket.IO 客户端实例
 
+    let frameCount = 0; // 记录处理的帧数
+    let lastFpsUpdateTime = performance.now(); // 用于计算 FPS 更新的时间
+    let lastFrameTime = performance.now(); // 记录上一次处理的时间
+    let frameProcessingTime = 0; // 用来计算平均处理时间
+
+    let currentFps = 0; // 全局变量存储当前 FPS
+
     // 获取所有摄像头设备并填充选择框
     async function getCameraDevices() {
       try {
-        const devices = await navigator.mediaDevices.enumerateDevices();
-        const videoDevices = devices.filter(device => device.kind === 'videoinput');
-        const selectElement = document.getElementById('cameraSelect');
+        console.log("尝试获取摄像头设备列表...");
 
-        selectElement.innerHTML = ''; // 清空现有选项
+        // 先申请摄像头权限
+        await navigator.mediaDevices.getUserMedia({ video: true });
+
+        // 获取设备信息
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        console.log("设备列表：", devices);
+
+        const videoDevices = devices.filter(device => device.kind === 'videoinput');
+        console.log("发现摄像头设备：", videoDevices);
+
+        const selectElement = document.getElementById('cameraSelect');
+        selectElement.innerHTML = ''; // 清空下拉列表
 
         videoDevices.forEach((device, index) => {
+          console.log(`摄像头 ${index + 1}:`, device);
           const option = document.createElement('option');
           option.value = device.deviceId;
           option.text = device.label || `摄像头 ${index + 1}`;
@@ -31,19 +49,47 @@
         // 默认选择第一个摄像头并启动
         if (videoDevices.length > 0) {
           startCamera(videoDevices[0].deviceId);
+        } else {
+          console.warn("未检测到摄像头设备！");
         }
 
       } catch (error) {
-        console.error('获取摄像头设备失败:', error);
+        console.error("获取摄像头设备失败:", error);
       }
     }
+
+    // 页面加载时调用
+    window.onload = function () {
+      socket = io.connect(); // 创建 Socket.IO 客户端连接
+      getCameraDevices();
+
+      // 监听从后端接收到的图像和 FPS
+      socket.on('receive_image', function (data) {
+        if (data.image) {
+          currentResultImage.src = data.image;
+        }
+        if (data.fps) {
+          console.log("接收到 FPS:", data.fps);
+          // 更新外部存储的 FPS
+          currentFps = data.fps;
+          // 更新页面上的 FPS 显示
+          document.getElementById('fps').innerText = `FPS: ${currentFps.toFixed(2)}`;
+        }
+      });
+
+      const selectElement = document.getElementById('cameraSelect');
+      selectElement.onchange = onCameraChange;
+    };
 
     // 启动摄像头
     async function startCamera(deviceId) {
       const constraints = { video: { deviceId: { exact: deviceId } } };
 
+      console.log(`尝试启动摄像头，设备ID: ${deviceId}`);
+
       // 停止之前的流
       if (currentStream) {
+        console.log("停止之前的摄像头流...");
         currentStream.getTracks().forEach(track => track.stop());
       }
 
@@ -51,16 +97,30 @@
         const stream = await navigator.mediaDevices.getUserMedia(constraints);
         currentStream = stream;
 
+        console.log("摄像头启动成功，流信息如下：", stream);
+
         // 创建HTML结构，放入video、canvas和处理后图片区域
         const container = document.getElementById('videoContainer');
-        container.innerHTML = `  
-          <h3>摄像头画面</h3>
-          <video id="video" autoplay></video>
+        container.innerHTML = `
+          <div style="display: flex; align-items: center; gap: 20px;">
+            <div>
+              <h3>摄像头画面</h3>
+              <video id="video" autoplay></video>
+            </div>
+            <div>
+              <div style="display: flex; align-items: center;">
+                <h4>处理后画面</h4>
+                <div id="fps" >FPS: 0</div>
+              </div>
+              <img id="result" />
+            </div>
+          </div>
           <canvas id="canvas" style="display:none"></canvas>
-          <h4>处理后画面</h4>
-          <img id="result" />
         `;
-        
+
+
+
+
         // 获取元素
         currentVideoElement = document.getElementById('video');
         currentCanvasElement = document.getElementById('canvas');
@@ -71,6 +131,7 @@
         currentVideoElement.onloadedmetadata = function () {
           currentCanvasElement.width = currentVideoElement.videoWidth;
           currentCanvasElement.height = currentVideoElement.videoHeight;
+          console.log(`视频元数据加载完成: 宽度=${currentCanvasElement.width}, 高度=${currentCanvasElement.height}`);
         };
 
         // 开始实时处理
@@ -82,26 +143,49 @@
     }
 
     // 处理摄像头视频
-    function processVideo() {
+    async function processVideo() {
       const video = currentVideoElement;
       const canvas = currentCanvasElement;
       const context = canvas.getContext('2d');
 
-      function captureFrame() {
+      async function captureFrame() {
         if (!video.paused && !video.ended) {
+          const currentTime = performance.now(); // 当前时间
+          const frameInterval = currentTime - lastFrameTime; // 计算上一帧的间隔时间
+
           context.drawImage(video, 0, 0, canvas.width, canvas.height);
-          const dataUrl = canvas.toDataURL('image/png');
+
+          // 使用 JPEG 格式，降低图片质量以提高处理速度
+          const dataUrl = canvas.toDataURL('image/jpeg', 0.8); // 修改为 JPEG 格式
 
           // 发送到后端处理（通过 Socket.IO）
           if (socket) {
-            socket.emit('send_image', { image: dataUrl });
+            socket.emit('send_image', { image: dataUrl }); // 直接发送，不等待回调
+          }
+
+          lastFrameTime = currentTime; // 更新上次处理时间
+          frameCount++; // 增加帧数
+
+          // 每秒更新一次 FPS
+          const currentFpsTime = performance.now();
+          if (currentFpsTime - lastFpsUpdateTime >= 1000) {
+            currentFps = 1000 * frameCount / (currentFpsTime - lastFpsUpdateTime); // 计算 FPS
+            frameCount = 0; // 重置帧数计数器
+            lastFpsUpdateTime = currentFpsTime; // 更新时间戳
+
+            // 更新页面上显示的 FPS
+            document.getElementById('fps').innerText = `FPS: ${currentFps.toFixed(2)}`;
           }
         }
-        requestAnimationFrame(captureFrame); // 使用 requestAnimationFrame 替代 setTimeout
+
+        // 使用 requestAnimationFrame 替代 setTimeout
+        requestAnimationFrame(captureFrame);
       }
 
       captureFrame();
     }
+
+
 
     // 切换摄像头
     function onCameraChange() {
@@ -109,25 +193,6 @@
       const selectedDeviceId = selectElement.value;
       startCamera(selectedDeviceId);
     }
-
-    // 连接到服务器
-    window.onload = function () {
-      socket = io.connect(); // 创建 Socket.IO 客户端连接
-      getCameraDevices();
-      
-      // 监听从后端接收到的图像和 FPS
-      socket.on('receive_image', function(data) {
-        if (data.image) {
-          currentResultImage.src = data.image;
-        }
-        if (data.fps) {
-          document.getElementById('fps').innerText = `FPS: ${data.fps.toFixed(2)}`; // 更新 FPS 显示
-        }
-      });
-
-      const selectElement = document.getElementById('cameraSelect');
-      selectElement.onchange = onCameraChange;
-    };
   </script>
 </head>
 
@@ -137,7 +202,9 @@
     <label for="cameraSelect">选择摄像头：</label>
     <select id="cameraSelect"></select>
   </div>
-  <div id="videoContainer"></div>
+  <div id="videoContainer" style="position: relative;">
+    <!-- 摄像头画面和处理后的图像都将显示在这里 -->
+  </div>
 </body>
 
 </html>
