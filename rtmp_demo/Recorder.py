@@ -57,7 +57,7 @@ def start_rtmp_stream(rtmp_url):
         ffmpeg_process.wait()
 
 if __name__ == "__main__":
-    # rtmp_url = "rtmp://127.0.0.1/live/stream"
-    rtmp_url = "rtmp://47.116.192.41/live/stream"
+    rtmp_url = "rtmp://127.0.0.1/live/stream"
+    # rtmp_url = "rtmp://47.116.192.41/live/stream"
     start_rtmp_stream(rtmp_url)
     print("✅ 推流已停止")
